@@ -7,6 +7,9 @@
 #include <unistd.h>
 #include <sys/epoll.h>
 #include<fcntl.h>
+#include "util.h"
+#include "Epoll.h"
+#include <vector>
 
 void setnonblocking(int sockfd) {
     int flags = fcntl(sockfd, F_GETFL, 0);
@@ -24,18 +27,7 @@ void setnonblocking(int sockfd) {
 struct sockaddr_in serv_addr;
 const int MAX_EVENTS = 10; // Maximum number of events to handle
 int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-void errif(bool condition, const char *errmsg){
-    if(condition){
-        perror(errmsg);
-        exit(EXIT_FAILURE);
-    }
-}
-void errif(int condition, const char *errmsg){
-    if(condition<0){
-        perror(errmsg);
-        exit(EXIT_FAILURE);
-    }
-}
+
 int main()
 {
     bzero(&serv_addr, sizeof(serv_addr));
@@ -43,24 +35,17 @@ int main()
     serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
     serv_addr.sin_port = htons(8888);                               
 
-    int err=bind(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr));
-    errif(err, "bind error");    
-    err=listen(sockfd, SOMAXCONN);
-    errif(err, "listen error");
+    err1=bind(sockfd, (sockaddr*)&serv_addr, sizeof(serv_addr));
+    errif(err1, "bind error");    
+    err1=listen(sockfd, SOMAXCONN);
+    errif(err1, "listen error");
 
-    int epfd=epoll_create1(0);
-    errif(epfd, "epoll_create1 error");
-    struct epoll_event events[MAX_EVENTS];
-    struct epoll_event ev;
-    ev.events = EPOLLIN; // Monitor for input events
-    ev.data.fd = sockfd; // Monitor the server socket
-    err = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
-    errif(err, "epoll_ctl error");
+    Epoll *ep=new Epoll();
+    ep->addFd(sockfd, EPOLLIN | EPOLLET); 
     while(1)
     {
-        int nfds = epoll_wait(epfd, events, MAX_EVENTS, -1);
-        errif(nfds<0, "epoll_wait error");
-        for(int i=0;i<nfds;i++)
+        std::vector<epoll_event> events = ep->poll(); // Poll for events
+        for(int i=0;i<events.size();i++)
         {
             if(events[i].data.fd==sockfd)
             {
@@ -70,10 +55,8 @@ int main()
                 int clnt_sockfd = accept(sockfd, (sockaddr*)&clnt_addr, &clnt_addr_len);
                 errif(clnt_sockfd < 0, "accept error");
                 printf("new client fd %d! IP: %s Port: %d\n", clnt_sockfd, inet_ntoa(clnt_addr.sin_addr), ntohs(clnt_addr.sin_port));
-                ev.data.fd = clnt_sockfd; // Add the new client socket to epoll
-                ev.events = EPOLLIN | EPOLLET; // Monitor for input events
                 setnonblocking(clnt_sockfd); // Set the client socket to non-blocking mode
-                epoll_ctl(epfd, EPOLL_CTL_ADD, clnt_sockfd, &ev);
+                ep->addFd(clnt_sockfd, EPOLLIN | EPOLLET); // Add the new client socket to epoll
 
             }
             else if(events[i].events & EPOLLIN) // Check if the event is for input
@@ -94,7 +77,7 @@ int main()
                     else if(read_bytes == 0) {
                         printf("Client fd %d disconnected.\n", clnt_sockfd);
                         close(clnt_sockfd);
-                        epoll_ctl(epfd, EPOLL_CTL_DEL, clnt_sockfd, NULL); // Remove from epoll
+                        ep->removeFd(clnt_sockfd); // Remove the client socket from epoll
                         break;
                     }
                     else{
